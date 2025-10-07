@@ -17,7 +17,7 @@ from PyQt5.QtGui import QIcon, QImage, QImageReader, QPixmap, QPainter, QPen, QT
 # ================================ 配置管理 ================================
 class CropConfig:
     """裁剪工具配置中心"""
-    APP_VERSION = "v9.6.6"
+    APP_VERSION = "v9.7.4"
     APP_TITLE = "大锤 EMBY海报裁剪工具"
     WINDOW_SIZE = (1200, 680)
     IMAGE_DISPLAY_SIZE = (800, 538)
@@ -301,9 +301,13 @@ class CropCalculator:
             crop_width, crop_height = CropCalculator.calculate_crop_size(img_width, img_height, ratio)
             
             # 居中放置
-            x = offset_x + (img_width - crop_width) // 2
+            # x = offset_x + (img_width - crop_width) // 2
+            # y = offset_y + (img_height - crop_height) // 2
+
+            # 右对齐
+            x = offset_x + (img_width - crop_width)
             y = offset_y + (img_height - crop_height) // 2
-            
+
             return QRect(x, y, crop_width, crop_height)
             
         except Exception as e:

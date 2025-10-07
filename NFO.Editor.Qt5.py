@@ -1588,38 +1588,44 @@ class NFOEditorQt5(NFOEditorQt):
             self.thumb_resolution_label.setText("分辨率: 未知")
 
     def display_image(self):
-        """显示图片"""
-        if not self.current_file_path:
-            return
+            """显示图片"""
+            if not self.current_file_path:
+                return
 
-        folder = os.path.dirname(self.current_file_path)
+            folder = os.path.dirname(self.current_file_path)
 
-        # 查找图片文件
-        poster_files = []
-        thumb_files = []
-        for entry in os.scandir(folder):
-            name = entry.name.lower()
-            if name.endswith(".jpg"):
-                if "poster" in name:
-                    poster_files.append(entry.name)
-                elif "thumb" in name:
-                    thumb_files.append(entry.name)
+            # 查找图片文件
+            poster_files = []
+            thumb_files = []
+            fanart_files = []
+            for entry in os.scandir(folder):
+                name = entry.name.lower()
+                if name.endswith(".jpg"):
+                    if "poster" in name:
+                        poster_files.append(entry.name)
+                    elif "thumb" in name:
+                        thumb_files.append(entry.name)
+                    elif "fanart" in name:
+                        fanart_files.append(entry.name)
 
-        # 显示poster图片
-        if poster_files:
-            poster_path = os.path.join(folder, poster_files[0])
-            self.load_image(poster_path, self.poster_label, self.poster_resolution_label)
-        else:
-            self.poster_label.setText("文件夹内无poster图片")
-            self.poster_resolution_label.setText("分辨率: 未知")
+            # 显示poster图片
+            if poster_files:
+                poster_path = os.path.join(folder, poster_files[0])
+                self.load_image(poster_path, self.poster_label, self.poster_resolution_label)
+            else:
+                self.poster_label.setText("文件夹内无poster图片")
+                self.poster_resolution_label.setText("分辨率: 未知")
 
-        # 显示thumb图片
-        if thumb_files:
-            thumb_path = os.path.join(folder, thumb_files[0])
-            self.load_image(thumb_path, self.thumb_label, self.thumb_resolution_label)
-        else:
-            self.thumb_label.setText("文件夹内无thumb图片")
-            self.thumb_resolution_label.setText("分辨率: 未知")
+            # 显示缩略图（优先级：thumb > fanart > 不显示）
+            if thumb_files:
+                thumb_path = os.path.join(folder, thumb_files[0])
+                self.load_image(thumb_path, self.thumb_label, self.thumb_resolution_label)
+            elif fanart_files:
+                fanart_path = os.path.join(folder, fanart_files[0])
+                self.load_image(fanart_path, self.thumb_label, self.thumb_resolution_label)
+            else:
+                self.thumb_label.setText("文件夹内无thumb或fanart图片")
+                self.thumb_resolution_label.setText("分辨率: 未知")
 
     def load_image(self, image_path, label, resolution_label=None):
         """加载图片到label，始终填充整个label，并显示分辨率"""
