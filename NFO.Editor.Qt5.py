@@ -672,6 +672,11 @@ class SearchSiteManager:
 
 
 class NFOEditorQt5(NFOEditorQt):
+    # 跨线程信号：从工作线程通知主线程更新 UI / 启动播放
+    # （threading.Thread 没有 Qt 事件循环，QTimer.singleShot 不会触发，必须用信号槽）
+    _trailer_play_signal = pyqtSignal(str, str)   # (trailer_url, num_text)
+    _trailer_error_signal = pyqtSignal(str, str)  # (num_text, error_msg)
+
     def __init__(self):
         super().__init__()
 
@@ -825,6 +830,10 @@ class NFOEditorQt5(NFOEditorQt):
 
         if hasattr(self, 'play_trailer_button'):
             self.play_trailer_button.clicked.connect(self.play_trailer)
+
+        # 连接跨线程信号到主线程槽（Qt 自动用 QueuedConnection 队列到主线程事件循环）
+        self._trailer_play_signal.connect(self._play_online_trailer)
+        self._trailer_error_signal.connect(self._on_trailer_error)
 
     def eventFilter(self, obj, event):
         if (
@@ -2078,6 +2087,7 @@ class NFOEditorQt5(NFOEditorQt):
                 QMessageBox.warning(self, "警告", "番号为空")
                 return
 
+            # 1) 优先查找本地同目录的 trailer 文件
             trailer_extensions = [".mp4", ".mkv", ".avi", ".mov", ".rm", ".mpeg", ".ts", ".strm"]
             trailer_files = []
 
@@ -2094,49 +2104,97 @@ class NFOEditorQt5(NFOEditorQt):
                 if trailer_path.lower().endswith(".strm"):
                     if self._play_strm(trailer_path):
                         self.status_bar.showMessage(
-                            f"正在播放预告片: {os.path.basename(trailer_path)}", 3000
+                            f"正在播放本地预告片: {os.path.basename(trailer_path)}", 3000
                         )
                 else:
                     try:
                         subprocess.Popen(["mpvnet", trailer_path])
                         self.status_bar.showMessage(
-                            f"正在播放预告片: {os.path.basename(trailer_path)}", 3000
+                            f"正在播放本地预告片: {os.path.basename(trailer_path)}", 3000
                         )
                     except OSError as e:
                         QMessageBox.critical(self, "错误", f"启动 mpvnet 失败: {e}")
-            else:
-                search_engine = SearchEngine()
+                return
 
-                try:
-                    print("本地未找到预告片，搜索JavTrailers...")
-                    javtrailers_url = search_engine.search_javtrailers(num_text)
-                    if javtrailers_url:
-                        webbrowser.open(javtrailers_url)
-                        self.status_bar.showMessage("已打开JavTrailers详情页", 3000)
-                        return
-                except Exception as e:
-                    print(f"JavTrailers搜索出错: {str(e)}")
-
-                try:
-                    print("JavTrailers未找到详情页，尝试JavDB...")
-                    javdb_url = search_engine.search_javdb(num_text)
-                    if javdb_url:
-                        webbrowser.open(javdb_url)
-                        self.status_bar.showMessage("已打开JavDB详情页", 3000)
-                        return
-                except Exception as e:
-                    print(f"JavDB搜索出错: {str(e)}")
-
-                try:
-                    fallback_url = f"https://javdb.com/search?q={num_text}&f=all"
-                    webbrowser.open(fallback_url)
-                    self.status_bar.showMessage("已打开JavDB搜索页面", 3000)
-                except Exception as e:
-                    print(f"打开JavDB搜索页面失败: {str(e)}")
-                    self.status_bar.showMessage("预告片搜索失败", 3000)
+            # 2) 本地未找到，异步调用 API 获取在线预告片地址
+            self.status_bar.showMessage(
+                f"本地无预告片，正在查询网络预告片: {num_text}", 0
+            )
+            self._fetch_online_trailer(num_text)
 
         except Exception as e:
             QMessageBox.critical(self, "错误", f"播放预告片失败: {str(e)}")
+
+    def _fetch_online_trailer(self, num_text):
+        """异步从 javp.cc.cd API 获取在线预告片直链并调用 mpvnet 播放。
+
+        API: GET https://javp.cc.cd/trailers/{番号}
+        成功返回: {"trailer": "https://cc3001.dmm.co.jp/.../xxx.mp4"}
+
+        网络 IO 在工作线程执行；
+        通过 pyqtSignal 跨线程将结果发回主线程（QTimer.singleShot 在无事件循环的
+        threading.Thread 中不会触发，必须用信号槽）。
+        """
+        def worker():
+            trailer_url = None
+            api_error = None
+
+            api_url = f"https://javp.cc.cd/trailers/{num_text}"
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                "Accept": "application/json, text/plain, */*",
+            }
+
+            try:
+                response = requests.get(api_url, headers=headers, timeout=10)
+                if response.status_code == 200:
+                    try:
+                        data = response.json()
+                        trailer_url = (data.get("trailer") or "").strip()
+                        if not trailer_url:
+                            api_error = "API 返回的 trailer 字段为空"
+                    except ValueError as e:
+                        api_error = f"解析 API JSON 失败: {str(e)}"
+                else:
+                    api_error = f"API 请求失败，状态码: {response.status_code}"
+            except requests.exceptions.Timeout:
+                api_error = "API 请求超时"
+            except requests.exceptions.RequestException as e:
+                api_error = f"网络请求失败: {str(e)}"
+            except Exception as e:
+                api_error = f"获取预告片失败: {str(e)}"
+
+            if trailer_url:
+                self._trailer_play_signal.emit(trailer_url, num_text)
+            else:
+                self._trailer_error_signal.emit(num_text, api_error or "未知错误")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _play_online_trailer(self, trailer_url, num_text):
+        """主线程槽：启动 mpvnet 播放在线预告片直链。
+
+        DMM CDN（cc3001.dmm.co.jp 等）需要 Referer 才能正常播放，
+        所以对 DMM 域名自动加上 --referrer 参数。
+        """
+        try:
+            cmd = ["mpvnet"]
+            if "dmm.co.jp" in trailer_url:
+                cmd.append("--referrer=https://www.dmm.co.jp/")
+            cmd.append(trailer_url)
+
+            subprocess.Popen(cmd)
+            self.status_bar.showMessage(f"正在播放网络预告片: {num_text}", 3000)
+        except OSError as e:
+            QMessageBox.critical(self, "错误", f"启动 mpvnet 失败: {e}")
+
+    def _on_trailer_error(self, num_text, err):
+        """主线程槽：API 获取预告片失败时的提示"""
+        self.status_bar.showMessage(f"未找到预告片: {num_text} ({err})", 8000)
 
     # ================================================================
     #  STRM 播放辅助 - 自动附加同名字幕
